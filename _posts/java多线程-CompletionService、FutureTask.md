@@ -75,9 +75,9 @@ pool-1-thread-4序号5实际处理时间:10000;实际所用时间：15003ms
 总耗时:16004ms
 ```
 
-### CompletionService出厂 ###
+### CompletionService ###
 
-CompletionService是一个借口，他的核心方法是:
+CompletionService是一个接口，他的核心方法是:
 ``` java 
 	Future<V> take() throws InterruptedException;
 
@@ -155,6 +155,7 @@ pool-1-thread-2线程5实际处理时间:10000;实际所用时间：11001ms
 ## FutureTask使用 ##
 
 ExecutorService这个接口，我们需要不需要返回结果的时候,需要的参数必须继承Runnable接口。当我们需要返回结果的时候，必须需要继承Callable接口，而且又能继承future接口代表返回值。我们不能因为返回不返回的问题就继承两个接口，并且里面的核心代码一样吧？有什么解决办法吗？有，它就是FutureTask，他继承了Runnable接口和future接口，而且你可以传入参数Callable实现，他会转成Runnable接口的实现。
+
 ``` java 
 public class DemoFuture implements Callable {
     private int i;
@@ -180,4 +181,6 @@ public class Test1 {
     }
 }
 ```
+
+
 
