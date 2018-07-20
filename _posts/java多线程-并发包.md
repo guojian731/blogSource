@@ -275,7 +275,25 @@ public class FairReenTrantLock implements Runnable{
 
 # Condition条件
 
-它的作用与Object.wait()和Object.notify()，Object.wait()和Object.notify()必须在synchronized修饰的方法块里才能使用，同样的Condition需要与重入锁相关联，在lock.newCondition()来为重入锁绑定一个Condition实例。
+它的作用是在可重入锁下ReentrantLock实现wait(),notify()以及notifyAll()的功能，Object.wait()和Object.notify()必须在synchronized修饰的方法块里才能使用，同样的Condition需要与重入锁相关联，在lock.newCondition()来为重入锁绑定一个Condition实例。下面是一个Condition接口方法以及使用Condition的简单实现。
+
+``` java 
+public interface Condition {
+    void await() throws InterruptedException;
+
+    void awaitUninterruptibly();
+
+    long awaitNanos(long var1) throws InterruptedException;
+
+    boolean await(long var1, TimeUnit var3) throws InterruptedException;
+
+    boolean awaitUntil(Date var1) throws InterruptedException;
+
+    void signal();
+
+    void signalAll();
+}
+```
 
 ``` java
 
@@ -320,10 +338,281 @@ public class ReentranctLockConditine implements Runnable{
 
 首先我们在main()方法中建立一个线程并启动，线程获得锁后，执行 condition.await();，要求condition在这个对象上进行等待，这时候线程会释放锁和资源，当condition.signalAll();会唤醒所有的资源，之前的锁又会尝试绑定之前的锁，这期间，需要获得锁的线程(也就是现在的主线程main方法)释放锁，要不然线程t1就会只与锁进行绑定，而不会获得锁。如果你讲33行的代码注掉的话，你会发现t1是无法执行到输入的语句的。
 
+## Condition优点 ##
+其实Condition对比wait()有自己的优势，
+- 首先是它的await(long var1, TimeUnit var3)，返回true的时候，说明是其他线程唤醒它的，返回false是因为达到了超时时间自己唤醒的。还有awaitUntil(Date var1)可以设置时间点，在现实场景中应用也是比较广泛的。
+- 一个ReentrantLock下可以有多个Condition对象，我们在做业务处理时，可以根据共享变量场景不同，使用不同的Condition，然后避免过早唤醒问题(即一些线程不满足条件依然被唤醒之后，发现条件不符合之后，再次将状态变成等待)。下面我们开始举个例子
+
+
+**Q：现在有一个房地产开发商发放礼物，总共有十个柜台，如果柜台有空余的话，买房的人(vip)和没买房的人(normal)都可以领取礼物，当时一旦发放礼物的柜台都满的情况下，当空出柜台的时候，优先给vip办理，normal只能在没有vip等待的时候才能过去领取奖励。**
+
+***A：***
+
+柜台代表类：
+``` java 
+public class Counter {
+    private static Lock lock=new ReentrantLock();
+    
+    private static Condition vipCondition=lock.newCondition();//vip的Condition
+    
+    private static Condition normalCondition=lock.newCondition();//普通用户的Condition
+    
+    private ConcurrentHashMap vipWaitMap=new ConcurrentHashMap();//记录等待的vip用户
+    
+    private AtomicInteger amout=new AtomicInteger(10);//柜台数
+    
+    public void take(String type,int i) throws InterruptedException {
+        lock.lock();
+        try {
+            while (amout.get()<=0){
+                 if (type.equals("vip")){
+                    vipWaitMap.put(i,i);//记录等待的vip用户
+                    System.out.println(new StringBuffer("vip，号码为:").append(i).append("进行等待"));
+                    vipCondition.await();
+                }
+                 if (type.equals("normal")){
+                     System.out.println(new StringBuffer("normal，号码为:").append(i).append("进行等待"));
+                     normalCondition.await();
+                 }
+            }
+            System.out.println(new StringBuffer("正在处理，客户类型为：").append(type)
+                    .append("，序号为：").append(i).append("的客户"));
+            amout.decrementAndGet();//处理业务，需要占用一个柜台
+        }finally {
+            lock.unlock();
+        }
+        Thread.sleep(2000);//模拟业务处理耗时
+        amout.incrementAndGet();//业务处理完，柜台空余出来
+        vipWaitMap.remove(i);//如果这个号码之前被记录过vip等待，移除。
+        lock.lock();
+        vipCondition.signalAll();//为了更好展现，释放所有vip等待线程
+        if (vipWaitMap.size()==0){
+            normalCondition.signalAll();//如果vipWaitMap为0，说明没有vip进行等待，唤醒所有普通用户。
+        }
+        lock.unlock();
+    }
+}
+```
+
+封装线程：
+
+``` java 
+
+public class CounterThread implements Runnable {
+    private Counter counter;
+    private String type;
+    private int i;
+    public CounterThread(Counter counter,String type,int i){
+        this.counter=counter;
+        this.type=type;
+        this.i=i;
+    }
+    @Override
+    public void run() {
+        try {
+            counter.take(type,i);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+```
+
+客户端：
+
+```  java 
+public class Client {
+    public static void main(String[] args) {
+        String [] table={"normal","vip","normal","vip",
+                "normal","vip","normal","vip",
+                "normal","vip","normal","vip",
+                "normal","vip","normal","vip",
+                "normal","vip","normal","vip",
+                "normal","vip","normal","vip",
+                "normal","vip","normal","vip",
+                "normal","vip","normal","vip"};
+        Counter counter=new Counter();
+        for (int i=0;i<table.length;i++){
+            Thread thread=new Thread(new CounterThread(counter,table[i],i));
+            thread.start();
+        }
+    }
+}
+```
+
+``` java 
+正在处理，客户类型为：normal，序号为：0的客户
+正在处理，客户类型为：vip，序号为：1的客户
+正在处理，客户类型为：normal，序号为：2的客户
+正在处理，客户类型为：vip，序号为：3的客户
+正在处理，客户类型为：normal，序号为：4的客户
+正在处理，客户类型为：vip，序号为：5的客户
+正在处理，客户类型为：normal，序号为：6的客户
+正在处理，客户类型为：vip，序号为：7的客户
+正在处理，客户类型为：normal，序号为：8的客户
+正在处理，客户类型为：vip，序号为：9的客户
+normal，号码为:10进行等待
+vip，号码为:11进行等待
+normal，号码为:12进行等待
+normal，号码为:14进行等待
+vip，号码为:15进行等待
+normal，号码为:16进行等待
+vip，号码为:17进行等待
+normal，号码为:18进行等待
+vip，号码为:19进行等待
+normal，号码为:20进行等待
+vip，号码为:21进行等待
+normal，号码为:22进行等待
+vip，号码为:23进行等待
+normal，号码为:24进行等待
+vip，号码为:25进行等待
+normal，号码为:26进行等待
+vip，号码为:27进行等待
+normal，号码为:28进行等待
+vip，号码为:13进行等待
+normal，号码为:30进行等待
+vip，号码为:29进行等待
+vip，号码为:31进行等待
+正在处理，客户类型为：vip，序号为：11的客户
+vip，号码为:15进行等待
+vip，号码为:17进行等待
+vip，号码为:19进行等待
+vip，号码为:21进行等待
+vip，号码为:23进行等待
+vip，号码为:25进行等待
+vip，号码为:27进行等待
+vip，号码为:13进行等待
+vip，号码为:29进行等待
+vip，号码为:31进行等待
+正在处理，客户类型为：vip，序号为：15的客户
+vip，号码为:17进行等待
+vip，号码为:19进行等待
+正在处理，客户类型为：vip，序号为：21的客户
+vip，号码为:23进行等待
+正在处理，客户类型为：vip，序号为：25的客户
+正在处理，客户类型为：vip，序号为：27的客户
+正在处理，客户类型为：vip，序号为：13的客户
+vip，号码为:29进行等待
+vip，号码为:31进行等待
+vip，号码为:17进行等待
+正在处理，客户类型为：vip，序号为：19的客户
+正在处理，客户类型为：vip，序号为：23的客户
+vip，号码为:29进行等待
+正在处理，客户类型为：vip，序号为：31的客户
+正在处理，客户类型为：vip，序号为：17的客户
+vip，号码为:29进行等待
+正在处理，客户类型为：vip，序号为：29的客户
+正在处理，客户类型为：normal，序号为：10的客户
+正在处理，客户类型为：normal，序号为：12的客户
+正在处理，客户类型为：normal，序号为：14的客户
+正在处理，客户类型为：normal，序号为：16的客户
+正在处理，客户类型为：normal，序号为：18的客户
+正在处理，客户类型为：normal，序号为：20的客户
+正在处理，客户类型为：normal，序号为：22的客户
+正在处理，客户类型为：normal，序号为：24的客户
+正在处理，客户类型为：normal，序号为：26的客户
+正在处理，客户类型为：normal，序号为：28的客户
+normal，号码为:30进行等待
+正在处理，客户类型为：normal，序号为：30的客户
+
+```
+
+# CountDownLatch:倒计时协调器 #
+
+Thread.join()的实现是一个线程等待另一个线程结束，但是有时候一个线程做到中间的一个关键步骤，就可以使其他线程线程继续运行，而不必等在这个线程终止。我们可以使用代码来执行，但是我们可以使用java.util.concurrent.CountDownLatch来解决。
+
+public CountDownLatch(int i)在创建一个CountDownLatch对象时要传入一个数字作为计数器，CountDownLatch.countDown()每次执行一次就会使计数器-1。CountDownLatch.wait()的方法保护条件，执行的时候判断一下计数器的值是否为0，当不为0的时候，线程将变成等待状态，等到计数器为0的时候，线程被唤醒。CountDownLatch的使用是一次性的，一个CountDownLatch实例只能够实现一次等待和唤醒。
+
+CountDownLatch内部实现了对"全部先决操作已执行完毕"(计数器值为0)这个保护条件的等待和通知的逻辑，所以它在使用await、coutDown的时候都无须加锁，不需要加锁，不需要加锁，不需要加锁！！！
+
+**Q:一个项目有n个服务器，启动命令后，服务开始启动，当每个服务器均启动成功了，才算真正的启动成功，如果有任何一个服务器没有成功，将作为失败，如何实现？**
+
+***A：***
+
+
+不管我们启动服务成功或者失败，我们都必须调用countDownLatch.countDown()，否则CountDownLatch的计数器会一直无法达到0，就会一直处于等待状态。
+
+服务器类：
+
+
+``` java 
+public class ComputerServer implements Runnable{
+   
+    private CountDownLatch countDownLatch;
+    
+    private Boolean isStarted =false;
+    
+    public ComputerServer(CountDownLatch countDownLatch) {
+        this.countDownLatch = countDownLatch;
+    }
+    
+    @Override
+    public void run() {
+        try{
+            doStart();
+            isStarted=true;
+        }catch (Exception e){
+            //异常的时候进行处理
+        }finally {
+            countDownLatch.countDown();
+        }
+    }
+    
+    private void doStart() {
+       //服务启动方法
+    }
+    
+    public Boolean isStarted(){
+        return isStarted;
+    }
+    
+}
+
+```
 
 
 
-
+``` java
+public class Client {
+    
+    private  static CountDownLatch countDownLatch;
+    
+    public static void main(String[] args) {
+       Boolean isAllOk=true;
+       List<ComputerServer>list= servicesStart();
+       try {
+            countDownLatch.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    
+        for (ComputerServer computerServer:list){
+            if (!computerServer.isStarted()){
+                isAllOk=false;
+                break;
+            }else {
+                System.out.println("服务器启动成功");
+            }
+        }
+        
+    }
+    
+    private static List servicesStart() {
+        countDownLatch=new CountDownLatch(3);
+        List<ComputerServer> list =new ArrayList<>();
+        list.add(new ComputerServer(countDownLatch));
+        list.add(new ComputerServer(countDownLatch));
+        list.add(new ComputerServer(countDownLatch));
+        for (ComputerServer computterServer:list){
+            Thread thread=new Thread(computterServer);
+            thread.start();
+        }
+        return list;
+    }
+    
+}
+```
 
 
 
